@@ -165,7 +165,7 @@ MtpExecutor::MtpExecutor(const EngineInitParams&                        params,
         {device_,
          params.gpt_weights,
          genModelDescription(params.model_config_, params.parallelism_config, params.eplb_config, params.moe_config),
-         cache_manager ? std::make_optional(cache_manager->kvCacheBuffer()) : std::nullopt,
+         cache_manager ? std::make_optional(cache_manager->getMainModelCacheLayerLayout()) : std::nullopt,
          params.model_id});
 
     if (params.ffn_disaggregate_config.enable_ffn_disaggregate) {
@@ -204,8 +204,7 @@ MtpExecutor::MtpExecutor(const EngineInitParams&                        params,
                                            mtp_params->parallelism_config,
                                            mtp_params->eplb_config,
                                            mtp_params->moe_config),
-             cache_manager ? std::make_optional(cache_manager->getMTPModuleKVCacheBuffer(static_cast<int>(index))) :
-                             std::nullopt,
+             cache_manager ? std::make_optional(cache_manager->getMTPModuleCacheLayerLayout(index)) : std::nullopt,
              mtp_params->model_id});
         if (!params.py_sp_model.is_none()) {
             RTP_LLM_LOG_INFO("[speculative decoding] using py model");
@@ -643,16 +642,19 @@ void MtpExecutor::prepareStreams(const std::list<GenerateStreamPtr>& streams,
             decode_streams.push_back(stream);
         }
 
-        // set base properties
+        // init sp output buffer if not exist
         stream->setReturnAllProbs(true);
         if (stream->getSPOutputBuffer() == nullptr) {
-            auto sp_output_buffer          = std::make_shared<SpeculativeExecutorStreamOutput>();
-            sp_output_buffer->propose_step = propose_step_;
-            sp_output_buffer->tokens       = device_->allocateBuffer(
+            auto sp_output_buffer    = std::make_shared<SpeculativeExecutorStreamOutput>();
+            sp_output_buffer->tokens = device_->allocateBuffer(
                 {rtp_llm::DataType::TYPE_INT32, {1, 2}, rtp_llm::AllocationType::HOST}, {"spec_tokens"});
 
             stream->setSPOutputBuffer(sp_output_buffer);
         }
+
+        // set propose_step
+        auto sp_output_buffer          = stream->getSPOutputBuffer();
+        sp_output_buffer->propose_step = propose_step_;
     }
 }
 

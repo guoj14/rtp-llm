@@ -149,9 +149,9 @@ void GenerateStream::setNeedReleaseResource(bool need_release_resource) {
     need_release_resource_ = need_release_resource;
     stream_cache_resource_->setNeedReleaseResource(need_release_resource);
 }
-int GenerateStream::nextNeedBlockNums(size_t reserve_step) const {
+int GenerateStream::nextNeedBlockNums(int reserve_step) const {
     // TODO: maybe need fix when context and reuse
-    return stream_cache_resource_->singleBatchNeedBlocks(seqLength() + reserve_step) * nextBatchSize();
+    return stream_cache_resource_->singleBatchNeedBlocks(seqLength(), reserve_step) * nextBatchSize();
 }
 
 std::shared_ptr<GenerateInput> GenerateStream::generateInput() const {
@@ -647,7 +647,13 @@ size_t GenerateStream::curBlocksNum() const {
 }
 
 size_t GenerateStream::maxTokenNum() const {
-    return std::min(max_seq_len_, generate_input_->generate_config->max_new_tokens + generate_input_->inputLength());
+    int propose_step = 0;
+    if (sp_output_buffer_) {
+        propose_step = sp_output_buffer_->propose_step;
+    }
+
+    return std::min(max_seq_len_ - propose_step,
+                    generate_input_->generate_config->max_new_tokens + generate_input_->inputLength());
 }
 
 bool GenerateStream::needFinish() {

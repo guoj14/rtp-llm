@@ -47,7 +47,7 @@ class AutoModel:
             self.py_env_configs.model_args.tokenizer_path = model_path
 
         # Create EngineConfig from py_env_configs
-        engine_config = EngineConfig.create(self.py_env_configs)
+        engine_config = EngineConfig.create(self.py_env_configs, nccl_comm_config=None)
 
         # Create model configs
         model_config = ModelFactory.create_model_config(
@@ -98,7 +98,7 @@ class AutoModel:
             runtime_config=engine_config.runtime_config,
             model_specific_config=engine_config.model_specific_config,
         )
-        self.device = "cuda:0"
+        self.device = "cuda"
 
         # init kv cache and bind it to py model
         self.tokens_per_block = self.model_config.attn_config.tokens_per_block
@@ -152,10 +152,7 @@ class AutoModel:
         kv_shape = [
             self.layer_num,
             self.block_nums,
-            2,
-            self.kv_head_num,
-            self.tokens_per_block,
-            self.size_per_head,
+            2 * self.kv_head_num * self.tokens_per_block * self.size_per_head,
         ]
 
         kv_cache_total = torch.zeros(

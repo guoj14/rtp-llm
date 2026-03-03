@@ -10,6 +10,7 @@
 #include "rtp_llm/cpp/model_utils/layernorm_types.h"
 #include "rtp_llm/cpp/config/ModelConfig.h"
 #include "rtp_llm/cpp/config/EplbConfig.h"
+#include "rtp_llm/cpp/devices/utils/RopeCache.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/cast.h"
 #include "pybind11/stl.h"
@@ -53,7 +54,8 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .value("AITER_ASM_PREFILL", FMHAType::AITER_ASM_PREFILL)
         .value("AITER_DECODE", FMHAType::AITER_DECODE)
         .value("AITER_ASM_DECODE", FMHAType::AITER_ASM_DECODE)
-        .value("PY_FLASHINFER_PREFILL", FMHAType::PY_FLASHINFER_PREFILL)
+        .value("PY_FLASHINFER_PREFILL_PAGED", FMHAType::PY_FLASHINFER_PREFILL_PAGED)
+        .value("PY_FLASHINFER_PREFILL_RAGGED", FMHAType::PY_FLASHINFER_PREFILL_RAGGED)
         .value("PY_FLASHINFER_DECODE", FMHAType::PY_FLASHINFER_DECODE);
 
     py::enum_<MlaOpsType>(m, "MlaOpsType")
@@ -274,6 +276,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("threefs_write_iov_size", &KVCacheConfig::threefs_write_iov_size)
         .def_readwrite("memory_cache_size_mb", &KVCacheConfig::memory_cache_size_mb)
         .def_readwrite("memory_cache_sync_timeout_ms", &KVCacheConfig::memory_cache_sync_timeout_ms)
+        .def_readwrite("linear_step", &KVCacheConfig::linear_step)
         .def_readwrite("int8_kv_cache", &KVCacheConfig::int8_kv_cache)
         .def_readwrite("fp8_kv_cache", &KVCacheConfig::fp8_kv_cache)
         .def_readwrite("kv_cache_mem_mb", &KVCacheConfig::kv_cache_mem_mb)
@@ -303,6 +306,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.threefs_write_iov_size,
                                       self.memory_cache_size_mb,
                                       self.memory_cache_sync_timeout_ms,
+                                      self.linear_step,
                                       self.int8_kv_cache,
                                       self.fp8_kv_cache,
                                       self.kv_cache_mem_mb,
@@ -314,7 +318,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.write_cache_sync);
             },
             [](py::tuple t) {
-                if (t.size() != 25)
+                if (t.size() != 26)
                     throw std::runtime_error("Invalid state!");
                 KVCacheConfig c;
                 try {
@@ -334,16 +338,16 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                     c.threefs_write_iov_size       = t[13].cast<int64_t>();
                     c.memory_cache_size_mb         = t[14].cast<int64_t>();
                     c.memory_cache_sync_timeout_ms = t[15].cast<int64_t>();
-                    c.int8_kv_cache                = t[16].cast<int>();
-                    c.fp8_kv_cache                 = t[17].cast<int>();
-                    c.kv_cache_mem_mb              = t[18].cast<int64_t>();
-                    c.seq_size_per_block           = t[19].cast<int>();
-                    c.test_block_num               = t[20].cast<int>();
-                    c.use_block_cache              = t[21].cast<int>();
-                    c.enable_device_cache          = t[22].cast<bool>();
-                    c.enable_memory_cache          = t[23].cast<bool>();
-                    c.write_cache_sync             = t[24].cast<bool>();
-
+                    c.linear_step                  = t[16].cast<int>();
+                    c.int8_kv_cache                = t[17].cast<int>();
+                    c.fp8_kv_cache                 = t[18].cast<int>();
+                    c.kv_cache_mem_mb              = t[19].cast<int64_t>();
+                    c.seq_size_per_block           = t[20].cast<int>();
+                    c.test_block_num               = t[21].cast<int>();
+                    c.use_block_cache              = t[22].cast<int>();
+                    c.enable_device_cache          = t[23].cast<bool>();
+                    c.enable_memory_cache          = t[24].cast<bool>();
+                    c.write_cache_sync             = t[25].cast<bool>();
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("KVCacheConfig unpickle error: ") + e.what());
                 }
@@ -842,6 +846,30 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def("getActivationBits", &QuantAlgo::getActivationBits)
         .def("setQuantAlgo", &QuantAlgo::setQuantAlgo);
 
+    // Register NcclCommConfig (NCCL ip/ports for initDevices; Python attribute names)
+    py::class_<NcclCommConfig>(m, "NcclCommConfig")
+        .def(py::init<>())
+        .def(py::init([](const std::string& nccl_ip,
+                         int64_t            tp_nccl_port,
+                         int64_t            dp_tp_nccl_port,
+                         int64_t            ffn_tp_nccl_port) {
+                 NcclCommConfig c;
+                 c.master_ip   = nccl_ip;
+                 c.tp_port     = tp_nccl_port;
+                 c.dp_tp_port  = dp_tp_nccl_port;
+                 c.ffn_tp_port = ffn_tp_nccl_port;
+                 return c;
+             }),
+             py::arg("nccl_ip")          = "",
+             py::arg("tp_nccl_port")     = 0,
+             py::arg("dp_tp_nccl_port")  = 0,
+             py::arg("ffn_tp_nccl_port") = 0)
+        .def_readwrite("nccl_ip", &NcclCommConfig::master_ip)
+        .def_readwrite("tp_nccl_port", &NcclCommConfig::tp_port)
+        .def_readwrite("dp_tp_nccl_port", &NcclCommConfig::dp_tp_port)
+        .def_readwrite("ffn_tp_nccl_port", &NcclCommConfig::ffn_tp_port)
+        .def("to_string", &NcclCommConfig::to_string);
+
     // Register ParallelismConfig
     py::class_<ParallelismConfig>(m, "ParallelismConfig")
         .def(py::init<>())
@@ -860,14 +888,6 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("ffn_tp_size", &ParallelismConfig::ffn_tp_size)
         .def_readwrite("ffn_tp_rank", &ParallelismConfig::ffn_tp_rank)
         .def_readwrite("enable_sp", &ParallelismConfig::enable_sp)
-        .def_readwrite("nccl_ip", &ParallelismConfig::nccl_ip)
-        .def_readwrite("tp_nccl_port", &ParallelismConfig::tp_nccl_port)
-        .def_readwrite("dp_tp_nccl_port", &ParallelismConfig::dp_tp_nccl_port)
-        .def_readwrite("ffn_tp_nccl_port", &ParallelismConfig::ffn_tp_nccl_port)
-        .def_readwrite("th_nccl_port", &ParallelismConfig::th_nccl_port)
-        .def_readwrite("http_port", &ParallelismConfig::http_port)
-        .def_readwrite("model_rpc_port", &ParallelismConfig::model_rpc_port)
-        .def_readwrite("embedding_rpc_server_port", &ParallelismConfig::embedding_rpc_server_port)
         .def_readwrite("ffn_disaggregate_config", &ParallelismConfig::ffn_disaggregate_config)
         .def("to_string", &ParallelismConfig::to_string)
         .def(py::pickle(
@@ -886,44 +906,28 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.ffn_tp_size,
                                       self.ffn_tp_rank,
                                       self.enable_sp,
-                                      self.nccl_ip,
-                                      self.tp_nccl_port,
-                                      self.dp_tp_nccl_port,
-                                      self.ffn_tp_nccl_port,
-                                      self.th_nccl_port,
-                                      self.http_port,
-                                      self.model_rpc_port,
-                                      self.embedding_rpc_server_port,
                                       self.ffn_disaggregate_config);
             },
             [](py::tuple t) {
-                if (t.size() != 23)
+                if (t.size() != 15)
                     throw std::runtime_error("Invalid state!");
                 ParallelismConfig c;
                 try {
-                    c.tp_size                   = t[0].cast<int64_t>();
-                    c.ep_size                   = t[1].cast<int64_t>();
-                    c.dp_size                   = t[2].cast<int64_t>();
-                    c.pp_size                   = t[3].cast<int64_t>();
-                    c.world_size                = t[4].cast<int64_t>();
-                    c.world_rank                = t[5].cast<int64_t>();
-                    c.local_world_size          = t[6].cast<int64_t>();
-                    c.ffn_sp_size               = t[7].cast<int64_t>();
-                    c.tp_rank                   = t[8].cast<int64_t>();
-                    c.ep_rank                   = t[9].cast<int64_t>();
-                    c.dp_rank                   = t[10].cast<int64_t>();
-                    c.ffn_tp_size               = t[11].cast<int64_t>();
-                    c.ffn_tp_rank               = t[12].cast<int64_t>();
-                    c.enable_sp                 = t[13].cast<bool>();
-                    c.nccl_ip                   = t[14].cast<std::string>();
-                    c.tp_nccl_port              = t[15].cast<int64_t>();
-                    c.dp_tp_nccl_port           = t[16].cast<int64_t>();
-                    c.ffn_tp_nccl_port          = t[17].cast<int64_t>();
-                    c.th_nccl_port              = t[18].cast<int64_t>();
-                    c.http_port                 = t[19].cast<int64_t>();
-                    c.model_rpc_port            = t[20].cast<int64_t>();
-                    c.embedding_rpc_server_port = t[21].cast<int64_t>();
-                    c.ffn_disaggregate_config   = t[22].cast<FfnDisAggregateConfig>();
+                    c.tp_size                 = t[0].cast<int64_t>();
+                    c.ep_size                 = t[1].cast<int64_t>();
+                    c.dp_size                 = t[2].cast<int64_t>();
+                    c.pp_size                 = t[3].cast<int64_t>();
+                    c.world_size              = t[4].cast<int64_t>();
+                    c.world_rank              = t[5].cast<int64_t>();
+                    c.local_world_size        = t[6].cast<int64_t>();
+                    c.ffn_sp_size             = t[7].cast<int64_t>();
+                    c.tp_rank                 = t[8].cast<int64_t>();
+                    c.ep_rank                 = t[9].cast<int64_t>();
+                    c.dp_rank                 = t[10].cast<int64_t>();
+                    c.ffn_tp_size             = t[11].cast<int64_t>();
+                    c.ffn_tp_rank             = t[12].cast<int64_t>();
+                    c.enable_sp               = t[13].cast<bool>();
+                    c.ffn_disaggregate_config = t[14].cast<FfnDisAggregateConfig>();
                 } catch (const std::exception& e) {
                     throw std::runtime_error(std::string("ParallelismConfig unpickle error: ") + e.what());
                 }
@@ -1132,6 +1136,36 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("mrope_dim2", &RopeConfig::mrope_dim2)
         .def_readwrite("mrope_dim3", &RopeConfig::mrope_dim3);
 
+    // Register RopeCache
+    py::class_<RopeCache>(m, "RopeCache")
+        .def(py::init<>())
+        .def_readwrite("used", &RopeCache::used)
+        .def_readwrite("dim", &RopeCache::dim)
+        .def_readwrite("base", &RopeCache::base)
+        .def_readwrite("data", &RopeCache::data);
+
+    // Register RopeCache functions
+    m.def("get_rope_cache",
+          &getRopeCache,
+          "Get RoPE cache tensor for given config and max position embeddings",
+          py::arg("rope_config"),
+          py::arg("max_position_embeddings"),
+          py::arg("interleave"));
+
+    m.def("get_rope_cache_once",
+          &getRopeCacheOnce,
+          "Get RoPE cache object once (singleton pattern)",
+          py::arg("rope_config"),
+          py::arg("max_position_embeddings"),
+          py::arg("is_cuda")    = true,
+          py::arg("interleave") = true);
+
+    m.def("check_rope_cache",
+          &checkRopeCache,
+          "Check if RoPE cache matches the given config",
+          py::arg("rope_config"),
+          py::arg("rope_cache"));
+
     // Register AttentionConfigs
     py::class_<AttentionConfigs>(m, "AttentionConfigs")
         .def(py::init<>())
@@ -1153,7 +1187,8 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("softmax_extra_scale", &AttentionConfigs::softmax_extra_scale)
         .def_readwrite("kv_cache_dtype", &AttentionConfigs::kv_cache_dtype)
         .def_readwrite("need_rope_kv_cache", &AttentionConfigs::need_rope_kv_cache)
-        .def_readwrite("dtype", &AttentionConfigs::dtype);
+        .def_readwrite("dtype", &AttentionConfigs::dtype)
+        .def_readwrite("max_seq_len", &AttentionConfigs::max_seq_len);
 
     py::class_<EPLBConfig>(m, "EPLBConfig")
         .def(py::init<>())

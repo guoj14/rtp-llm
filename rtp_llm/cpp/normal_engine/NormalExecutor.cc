@@ -64,8 +64,8 @@ NormalExecutor::NormalExecutor(const EngineInitParams&                   params,
          params.gpt_weights,
          genModelDescription(params.model_config_, params.parallelism_config, params.eplb_config, params.moe_config),
          cache_manager ?
-             std::make_optional(is_propose_ ? cache_manager->getMTPModuleKVCacheBuffer(propose_model_index_) :
-                                              cache_manager->kvCacheBuffer()) :
+             std::make_optional(is_propose_ ? cache_manager->getMTPModuleCacheLayerLayout(propose_model_index_) :
+                                              cache_manager->getMainModelCacheLayerLayout()) :
              std::nullopt,
          params.model_id});
 
